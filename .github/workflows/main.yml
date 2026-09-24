@@ -1,0 +1,162 @@
+name: Build G-Labs Studio
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements
+
+      - name: Verify project
+        shell: pwsh
+        run: |
+          $required = @(
+            "desktop\main.py",
+            "desktop\api_client.py",
+            "desktop\workflow.py",
+            "bridge\server.py",
+            "requirements"
+          )
+
+          foreach ($file in $required) {
+            if (!(Test-Path $file)) {
+              throw "Missing required file: $file"
+            }
+          }
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements
+          pip install pyinstaller
+
+      - name: Compile Python sources
+        shell: pwsh
+        run: |
+          python -m compileall desktop bridge
+
+      - name: Validate workflow samples
+        shell: pwsh
+        run: |
+          if (Test-Path "data\workflows") {
+            Get-ChildItem "data\workflows" -Filter "*.json" -Recurse |
+              ForEach-Object {
+                Write-Host "Checking workflow: $($_.FullName)"
+                Get-Content $_.FullName -Raw | ConvertFrom-Json | Out-Null
+              }
+          }
+
+      - name: Prepare build directories
+        shell: pwsh
+        run: |
+          if (Test-Path "package") {
+            Remove-Item "package" -Recurse -Force
+          }
+
+          if (Test-Path "build_pyinstaller") {
+            Remove-Item "build_pyinstaller" -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path "package" | Out-Null
+
+      - name: Build Windows EXE
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name "G-Labs-Studio" `
+            --distpath "package" `
+            --workpath "build_pyinstaller" `
+            desktop\main.py
+
+      - name: Copy application resources
+        shell: pwsh
+        run: |
+          $directories = @(
+            "bridge",
+            "extension",
+            "assets",
+            "data",
+            "_locales"
+          )
+
+          foreach ($dir in $directories) {
+            if (Test-Path $dir) {
+              Copy-Item $dir "package\$dir" -Recurse -Force
+            }
+          }
+
+          $files = @(
+            "README.md",
+            "requirements"
+          )
+
+          foreach ($file in $files) {
+            if (Test-Path $file) {
+              Copy-Item $file "package\$file" -Force
+            }
+          }
+
+      - name: Verify build
+        shell: pwsh
+        run: |
+          $exe = "package\G-Labs-Studio.exe"
+
+          if (!(Test-Path $exe)) {
+            throw "G-Labs-Studio.exe was not created."
+          }
+
+          $size = (Get-Item $exe).Length
+
+          if ($size -lt 100000) {
+            throw "EXE appears to be invalid or unexpectedly small: $size bytes"
+          }
+
+          Write-Host "Build successful."
+          Write-Host "EXE: $exe"
+          Write-Host "Size: $size bytes"
+
+          Get-ChildItem "package" -Recurse
+
+      - name: Create ZIP package
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "package\*" `
+            -DestinationPath "G-Labs-Studio-Windows.zip" `
+            -Force
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: G-Labs-Studio-Windows
+          path: package
+          if-no-files-found: error
+
+      - name: Upload ZIP package
+        uses: actions/upload-artifact@v4
+        with:
+          name: G-Labs-Studio-Windows-ZIP
+          path: G-Labs-Studio-Windows.zip
+          if-no-files-found: error
